@@ -1,0 +1,13 @@
+[project]
+name = "quantum-error-correction"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "marimo>=0.23.6",
+    "matplotlib>=3.10.9",
+    "pylatexenc>=2.10",
+    "qiskit>=2.4.1",
+    "qiskit-aer>=0.17.2",
+]
