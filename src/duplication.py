@@ -12,11 +12,17 @@ def _():
     from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister, transpile
     from qiskit_aer import AerSimulator
 
+    from qiskit_aer.noise import NoiseModel, depolarizing_error
+
+
+
     return (
         AerSimulator,
         ClassicalRegister,
+        NoiseModel,
         QuantumCircuit,
         QuantumRegister,
+        depolarizing_error,
         mo,
         np,
         plt,
@@ -37,17 +43,6 @@ def _(mo):
 @app.cell
 def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
     def build_circuit(p, record_noise=True):
-        """Build the 3-qubit bit-flip code circuit.
-
-        Each data qubit is sent through a bit-flip channel with probability p,
-        implemented by entangling it with a fresh "environment" ancilla rotated
-        to sqrt(1-p)|0> + sqrt(p)|1>. The simulator samples this per shot,
-        so probability p is realised statistically across shots.
-
-        If record_noise=True, the noise ancillas are measured into a separate
-        3-bit classical register so we can see which qubits were flipped on
-        each shot.
-        """
         data = QuantumRegister(3, "data")
         noise = QuantumRegister(3, "noise")
         anc = QuantumRegister(2, "anc")
@@ -60,21 +55,14 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
             regs.append(err)
         qc = QuantumCircuit(*regs)
 
-        # |psi> = cos(pi/8)|0> + e^{i pi/2} sin(pi/8)|1>
-        # Ry(2*pi/8) gives cos(pi/8)|0> + sin(pi/8)|1>; S adds the i phase on |1>.
         qc.ry(np.pi / 4, data[0])
         qc.s(data[0])
         qc.barrier()
 
-        # Encode: a|0> + b|1>  ->  a|000> + b|111>
         qc.cx(data[0], data[1])
         qc.cx(data[0], data[2])
         qc.barrier()
 
-        # Stochastic bit-flip channel via Stinespring dilation:
-        # rotate each noise ancilla to sqrt(1-p)|0> + sqrt(p)|1>, then CNOT it
-        # into the corresponding data qubit. Per shot, the simulator samples
-        # the ancilla; if it collapses to |1>, the data qubit gets an X.
         theta = 2.0 * np.arcsin(np.sqrt(p))
         for i in range(3):
             qc.ry(theta, noise[i])
@@ -84,7 +72,6 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
                 qc.measure(noise[i], err[i])
         qc.barrier()
 
-        # Syndrome extraction: Z0Z1 -> anc[0], Z1Z2 -> anc[1]
         qc.cx(data[0], anc[0])
         qc.cx(data[1], anc[0])
         qc.cx(data[1], anc[1])
@@ -95,9 +82,6 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
         qc.measure(anc[1], syn[1])
         qc.barrier()
 
-        # Correction conditioned on syndrome.
-        # syn integer value = syn[1]*2 + syn[0]:
-        #   1 (01) -> X on data[0],  3 (11) -> X on data[1],  2 (10) -> X on data[2]
         with qc.if_test((syn, 1)):
             qc.x(data[0])
         with qc.if_test((syn, 3)):
@@ -106,14 +90,9 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
             qc.x(data[2])
         qc.barrier()
 
-        # Decode (uncompute encoder) so data[0] holds the logical qubit.
         qc.cx(data[0], data[2])
         qc.cx(data[0], data[1])
 
-        # Inverse of state prep on data[0]: Sdg then Ry(-pi/4).
-        # If correction succeeded, data[0] is back to |psi>, and the inverse
-        # maps it to |0>; a logical X (uncorrectable 2- or 3-qubit error)
-        # leaves data[0] in a state whose inverse-prep gives |1> with prob 1.
         qc.sdg(data[0])
         qc.ry(-np.pi / 4, data[0])
         qc.measure(data[0], out[0])
@@ -126,10 +105,6 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
 @app.cell
 def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
     def build_baseline_circuit(p):
-        """Single physical qubit, no encoding/correction. Bit-flip with prob p.
-
-        Used as the uncorrected baseline: P(error) should be ~ p.
-        """
         data = QuantumRegister(1, "data")
         noise = QuantumRegister(1, "noise")
         out = ClassicalRegister(1, "out")
@@ -159,13 +134,6 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
 @app.cell
 def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
     def build_phase_flip_circuit(p):
-        """3-qubit phase-flip code with Z noise and syndrome-based correction.
-
-        Same structure as the bit-flip code, conjugated by Hadamards on the
-        data qubits: encode in the X basis, suffer Z errors, then rotate back
-        so Z errors become X errors and the bit-flip syndrome / correction
-        machinery applies unchanged.
-        """
         data = QuantumRegister(3, "data")
         noise = QuantumRegister(3, "noise")
         anc = QuantumRegister(2, "anc")
@@ -226,7 +194,6 @@ def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
 @app.cell
 def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
     def build_baseline_z_circuit(p):
-        """Single physical qubit, Z noise with probability p, no correction."""
         data = QuantumRegister(1, "data")
         noise = QuantumRegister(1, "noise")
         out = ClassicalRegister(1, "out")
@@ -264,8 +231,22 @@ def _(AerSimulator, transpile):
 @app.cell
 def _(build_circuit, p_slider):
     qc = build_circuit(float(p_slider.value))
-    qc.draw(output="mpl")
+    qc.draw(output="mpl", fold=-1)
     return (qc,)
+
+
+@app.cell
+def _(build_baseline_circuit, p_slider):
+    qc_baseline = build_baseline_circuit(p_slider.value)
+    qc_baseline.draw("mpl")
+    return
+
+
+@app.cell
+def _(build_baseline_z_circuit, p_slider):
+    qc_baseline_z = build_baseline_z_circuit(p_slider.value)
+    qc_baseline_z.draw("mpl")
+    return
 
 
 @app.cell
@@ -356,14 +337,13 @@ def _(baseline_errors, baseline_total, counts, mo, p_baseline):
 @app.cell
 def _(mo):
     sweep_shots_slider = mo.ui.slider(
-        start=200, stop=5000, step=100, value=1000, label="Sweep shots per p"
+        start=200, stop=5000, step=100, value=2000, label="Sweep shots per p"
     )
     sweep_points_slider = mo.ui.slider(
-        start=10, stop=99, step=1, value=25, label="Sweep points"
+        start=10, stop=99, step=1, value=99, label="Sweep points"
     )
-    run_sweep_btn = mo.ui.run_button(label="Run sweep")
-    mo.vstack([sweep_shots_slider, sweep_points_slider, run_sweep_btn])
-    return run_sweep_btn, sweep_points_slider, sweep_shots_slider
+    mo.vstack([sweep_shots_slider, sweep_points_slider])
+    return sweep_points_slider, sweep_shots_slider
 
 
 @app.cell
@@ -374,67 +354,372 @@ def _(
     build_phase_flip_circuit,
     evaluate,
     np,
-    run_sweep_btn,
     sweep_points_slider,
     sweep_shots_slider,
 ):
-    mo_stop = not run_sweep_btn.value
-    if mo_stop:
-        ps = np.array([])
-        bit_baseline = np.array([])
-        bit_coded = np.array([])
-        phase_baseline = np.array([])
-        phase_coded = np.array([])
-    else:
-        n_points = int(sweep_points_slider.value)
-        shots = int(sweep_shots_slider.value)
-        ps = np.linspace(0.01, 0.99, n_points)
+    n_points = int(sweep_points_slider.value)
+    shots = int(sweep_shots_slider.value)
+    ps = np.linspace(0.01, 0.99, n_points)
 
-        def _err_rate(qc, shots):
-            counts = evaluate(qc, shots=shots)
-            total = sum(counts.values())
-        
-            errs = sum(n for key, n in counts.items() if key.split()[0] == "1")
-            return errs / total if total else 0.0
 
-        bit_baseline = np.array([_err_rate(build_baseline_circuit(p), shots) for p in ps])
-        bit_coded = np.array(
-            [_err_rate(build_circuit(p, record_noise=False), shots) for p in ps]
-        )
-        phase_baseline = np.array(
-            [_err_rate(build_baseline_z_circuit(p), shots) for p in ps]
-        )
-        phase_coded = np.array([_err_rate(build_phase_flip_circuit(p), shots) for p in ps])
-    return bit_baseline, bit_coded, phase_baseline, phase_coded, ps
+    def _err_rate(qc, shots):
+        counts = evaluate(qc, shots=shots)
+        total = sum(counts.values())
+
+        errs = sum(n for key, n in counts.items() if key.split()[0] == "1")
+        return errs / total if total else 0.0
+
+
+    bit_baseline = np.array([_err_rate(build_baseline_circuit(p), shots) for p in ps])
+    bit_coded = np.array(
+        [_err_rate(build_circuit(p, record_noise=False), shots) for p in ps]
+    )
+    phase_baseline = np.array([_err_rate(build_baseline_z_circuit(p), shots) for p in ps])
+    phase_coded = np.array([_err_rate(build_phase_flip_circuit(p), shots) for p in ps])
+    return (
+        bit_baseline,
+        bit_coded,
+        n_points,
+        phase_baseline,
+        phase_coded,
+        ps,
+        shots,
+    )
 
 
 @app.cell
-def _(bit_baseline, bit_coded, mo, phase_baseline, phase_coded, plt, ps):
-    if len(ps) == 0:
-        out = mo.md("_Click **Run sweep** above to generate the plot._")
-    else:
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+def _(bit_baseline, bit_coded, phase_baseline, phase_coded, plt, ps):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-        axes[0].plot(ps, bit_baseline, "o-", label="single qubit (no code)")
-        axes[0].plot(ps, bit_coded, "s-", label="3-qubit bit-flip code")
-        axes[0].plot(ps, ps, "k--", alpha=0.3, label="y = p")
-        axes[0].set_xlabel("physical bit-flip probability p")
-        axes[0].set_ylabel("measured logical error rate")
-        axes[0].set_title("Bit-flip channel (X noise)")
-        axes[0].legend()
-        axes[0].grid(alpha=0.3)
+    axes[0].plot(ps, bit_baseline, "o-", label="single qubit (no code)")
+    axes[0].plot(ps, bit_coded, "s-", label="3-qubit bit-flip code")
+    axes[0].plot(ps, ps, "m--", label="y = p")
+    axes[0].set_xlabel("physical bit-flip probability p")
+    axes[0].set_ylabel("measured logical error rate")
+    axes[0].set_title("Bit-flip channel (X noise)")
+    axes[0].legend()
+    axes[0].grid(alpha=0.3)
 
-        axes[1].plot(ps, phase_baseline, "o-", label="single qubit (no code)")
-        axes[1].plot(ps, phase_coded, "s-", label="3-qubit phase-flip code")
-        axes[1].set_xlabel("physical phase-flip probability p")
-        axes[1].set_ylabel("measured logical error rate")
-        axes[1].set_title("Phase-flip channel (Z noise)")
-        axes[1].legend()
-        axes[1].grid(alpha=0.3)
+    axes[1].plot(ps, phase_baseline, "o-", label="single qubit (no code)")
+    axes[1].plot(ps, phase_coded, "s-", label="3-qubit phase-flip code")
+    axes[1].set_xlabel("physical phase-flip probability p")
+    axes[1].set_ylabel("measured logical error rate")
+    axes[1].set_title("Phase-flip channel (Z noise)")
+    axes[1].legend()
+    axes[1].grid(alpha=0.3)
 
-        fig.tight_layout()
-        out = fig
-    out
+    fig.tight_layout()
+    fig
+    return
+
+
+@app.cell
+def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
+    def build_clean_bit_flip_circuit():
+        data = QuantumRegister(3, "data")
+        anc = QuantumRegister(2, "anc")
+        syn = ClassicalRegister(2, "syndrome")
+        out = ClassicalRegister(1, "out")
+        qc = QuantumCircuit(data, anc, syn, out)
+
+        qc.ry(np.pi / 4, data[0])
+        qc.s(data[0])
+        qc.barrier()
+
+        qc.cx(data[0], data[1])
+        qc.cx(data[0], data[2])
+        qc.barrier()
+
+        for i in range(3):
+            qc.id(data[i])
+        qc.barrier()
+
+        qc.cx(data[0], anc[0])
+        qc.cx(data[1], anc[0])
+        qc.cx(data[1], anc[1])
+        qc.cx(data[2], anc[1])
+        qc.measure(anc[0], syn[0])
+        qc.measure(anc[1], syn[1])
+        qc.barrier()
+
+        with qc.if_test((syn, 1)):
+            qc.x(data[0])
+        with qc.if_test((syn, 3)):
+            qc.x(data[1])
+        with qc.if_test((syn, 2)):
+            qc.x(data[2])
+        qc.barrier()
+
+        qc.cx(data[0], data[2])
+        qc.cx(data[0], data[1])
+        qc.sdg(data[0])
+        qc.ry(-np.pi / 4, data[0])
+        qc.measure(data[0], out[0])
+
+        return qc
+
+
+    def build_clean_baseline_circuit():
+        data = QuantumRegister(1, "data")
+        out = ClassicalRegister(1, "out")
+        qc = QuantumCircuit(data, out)
+
+        qc.ry(np.pi / 4, data[0])
+        qc.s(data[0])
+        qc.barrier()
+        qc.id(data[0])
+        qc.barrier()
+        qc.sdg(data[0])
+        qc.ry(-np.pi / 4, data[0])
+        qc.measure(data[0], out[0])
+
+        return qc
+
+    return build_clean_baseline_circuit, build_clean_bit_flip_circuit
+
+
+@app.cell
+def _(build_clean_bit_flip_circuit):
+    build_clean_bit_flip_circuit().draw("mpl", fold=-1)
+    return
+
+
+@app.cell
+def _(build_clean_baseline_circuit):
+    build_clean_baseline_circuit().draw("mpl", fold=-1)
+    return
+
+
+@app.cell
+def _(NoiseModel, depolarizing_error):
+    def make_depolarizing_noise_model(p):
+        nm = NoiseModel()
+        nm.add_all_qubit_quantum_error(depolarizing_error(p, 1), ["id"])
+        return nm
+
+    return (make_depolarizing_noise_model,)
+
+
+@app.cell
+def _(AerSimulator, transpile):
+    def evaluate_with_noise(qc, noise_model, shots=2000):
+        sim = AerSimulator(noise_model=noise_model)
+        tqc = transpile(qc, sim, optimization_level=0)
+        result = sim.run(tqc, shots=int(shots)).result()
+        return result.get_counts()
+
+    return (evaluate_with_noise,)
+
+
+@app.cell
+def _(
+    build_clean_baseline_circuit,
+    build_clean_bit_flip_circuit,
+    evaluate_with_noise,
+    make_depolarizing_noise_model,
+    n_points,
+    np,
+    shots,
+):
+    ps_r = np.linspace(0.01, 0.99, n_points)
+
+
+    def _err_rate_nm(qc, nm, shots):
+        counts = evaluate_with_noise(qc, nm, shots=shots)
+        total = sum(counts.values())
+        errs = sum(n for key, n in counts.items() if key.split()[0] == "1")
+        return errs / total if total else 0.0
+
+
+    base_qc = build_clean_baseline_circuit()
+    code_qc = build_clean_bit_flip_circuit()
+    real_baseline = np.array(
+        [_err_rate_nm(base_qc, make_depolarizing_noise_model(p), shots) for p in ps_r]
+    )
+    real_coded = np.array(
+        [_err_rate_nm(code_qc, make_depolarizing_noise_model(p), shots) for p in ps_r]
+    )
+    return ps_r, real_baseline, real_coded
+
+
+@app.cell
+def _(plt, ps_r, real_baseline, real_coded):
+    fig_real, ax_real = plt.subplots(figsize=(7, 5))
+    ax_real.plot(ps_r, real_baseline, "o-", label="single qubit (no code)")
+    ax_real.plot(ps_r, real_coded, "s-", label="3-qubit bit-flip code")
+    ax_real.set_xlabel("depolarizing channel strength p")
+    ax_real.set_ylabel("measured logical error rate")
+    ax_real.set_title("Realistic noise: depolarizing channel + bit-flip code")
+    ax_real.legend()
+    ax_real.grid(alpha=0.3)
+    fig_real.tight_layout()
+    fig_real
+    return
+
+
+@app.cell
+def _(ClassicalRegister, QuantumCircuit, QuantumRegister, np):
+    def _basis_rotation(qc, qubit, basis):
+        if basis == "X":
+            qc.h(qubit)
+        elif basis == "Y":
+            qc.sdg(qubit)
+            qc.h(qubit)
+        elif basis != "Z":
+            raise ValueError(f"unknown basis {basis}")
+
+
+    def build_clean_bit_flip_basis(basis):
+        data = QuantumRegister(3, "data")
+        anc = QuantumRegister(2, "anc")
+        syn = ClassicalRegister(2, "syndrome")
+        out = ClassicalRegister(1, "out")
+        qc = QuantumCircuit(data, anc, syn, out)
+
+        qc.ry(np.pi / 4, data[0])
+        qc.s(data[0])
+        qc.barrier()
+
+        qc.cx(data[0], data[1])
+        qc.cx(data[0], data[2])
+        qc.barrier()
+
+        for i in range(3):
+            qc.id(data[i])
+        qc.barrier()
+
+        qc.cx(data[0], anc[0])
+        qc.cx(data[1], anc[0])
+        qc.cx(data[1], anc[1])
+        qc.cx(data[2], anc[1])
+        qc.measure(anc[0], syn[0])
+        qc.measure(anc[1], syn[1])
+        qc.barrier()
+
+        with qc.if_test((syn, 1)):
+            qc.x(data[0])
+        with qc.if_test((syn, 3)):
+            qc.x(data[1])
+        with qc.if_test((syn, 2)):
+            qc.x(data[2])
+        qc.barrier()
+
+        qc.cx(data[0], data[2])
+        qc.cx(data[0], data[1])
+
+        _basis_rotation(qc, data[0], basis)
+        qc.measure(data[0], out[0])
+        return qc
+
+
+    def build_clean_baseline_basis(basis):
+        data = QuantumRegister(1, "data")
+        out = ClassicalRegister(1, "out")
+        qc = QuantumCircuit(data, out)
+        qc.ry(np.pi / 4, data[0])
+        qc.s(data[0])
+        qc.barrier()
+        qc.id(data[0])
+        qc.barrier()
+        _basis_rotation(qc, data[0], basis)
+        qc.measure(data[0], out[0])
+        return qc
+
+    return build_clean_baseline_basis, build_clean_bit_flip_basis
+
+
+@app.cell
+def _(build_clean_bit_flip_basis):
+    build_clean_bit_flip_basis("X").draw("mpl")
+    return
+
+
+@app.cell
+def _(build_clean_bit_flip_basis):
+    build_clean_bit_flip_basis("Y").draw("mpl")
+    return
+
+
+@app.cell
+def _(build_clean_bit_flip_basis):
+    build_clean_bit_flip_basis("Z").draw("mpl")
+    return
+
+
+@app.cell
+def _(build_clean_baseline_basis):
+    build_clean_baseline_basis("X").draw("mpl")
+    return
+
+
+@app.cell
+def _(build_clean_baseline_basis):
+    build_clean_baseline_basis("Y").draw("mpl")
+    return
+
+
+@app.cell
+def _(build_clean_baseline_basis):
+    build_clean_baseline_basis("Z").draw("mpl")
+    return
+
+
+@app.cell
+def _(
+    build_clean_baseline_basis,
+    build_clean_bit_flip_basis,
+    evaluate_with_noise,
+    make_depolarizing_noise_model,
+    np,
+    ps,
+    shots,
+):
+    def _expectation(qc, nm, shots):
+        counts = evaluate_with_noise(qc, nm, shots=shots)
+        total = sum(counts.values())
+        n0 = sum(n for key, n in counts.items() if key.split()[0] == "0")
+        n1 = total - n0
+        return (n0 - n1) / total if total else 0.0
+
+
+    base_qcs = {b: build_clean_baseline_basis(b) for b in ("X", "Y", "Z")}
+    code_qcs = {b: build_clean_bit_flip_basis(b) for b in ("X", "Y", "Z")}
+
+    bloch_base = {b: [] for b in ("X", "Y", "Z")}
+    bloch_code = {b: [] for b in ("X", "Y", "Z")}
+    for p in ps:
+        nm = make_depolarizing_noise_model(p)
+        for b in ("X", "Y", "Z"):
+            bloch_base[b].append(_expectation(base_qcs[b], nm, shots))
+            bloch_code[b].append(_expectation(code_qcs[b], nm, shots))
+    bloch_base = {b: np.array(v) for b, v in bloch_base.items()}
+    bloch_code = {b: np.array(v) for b, v in bloch_code.items()}
+    return bloch_base, bloch_code
+
+
+@app.cell
+def _(bloch_base, bloch_code, np, plt, ps):
+    ideal = {"X": 0.0, "Y": np.sqrt(2) / 2, "Z": np.sqrt(2) / 2}
+
+    fig_t, axes_t = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
+    for ax, basis in zip(axes_t, ("X", "Y", "Z")):
+        ax.axhline(
+            ideal[basis], color="m", linestyle=":", label=f"ideal ⟨{basis}⟩"
+        )
+        ax.plot(ps, bloch_base[basis], "o-", label="single qubit")
+        ax.plot(ps, bloch_code[basis], "s-", label="bit-flip code")
+        ax.set_xlabel("depolarizing strength p")
+        ax.set_title(f"⟨{basis}⟩ on decoded qubit")
+        ax.grid(alpha=0.3)
+        ax.legend()
+    axes_t[0].set_ylabel("expectation value")
+    fig_t.tight_layout()
+    fig_t
+    return
+
+
+@app.cell
+def _():
     return
 
 
